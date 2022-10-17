@@ -16,12 +16,9 @@
 '''
 @authors:      Pedram Amini
                github/pdasilva
-               Patrick Cousineau (github/hippo-pat-amus)
+               Pat Cousineau (github/hippo-pat-amus)
 @license:      GNU General Public License 2.0 or later
-@contact:      cousineau.pat@gmail.com
 '''
-
-from __future__ import print_function
 
 import os
 import subprocess
@@ -31,64 +28,36 @@ import time
 import psutil
 
 import vtrace
-import envi.memory as e_memory
-import envi.bits as e_bits
-
-def _enumerate_processes():
-    for pid in psutil.pids():
-        try:
-            yield (pid, psutil.Process(pid).name())
-        except Exception as e:
-            continue
 
 class VtraceCallbackNotifier(vtrace.Notifier):
     '''
     Callback class used to capture vtrace events
     '''
 
-    def __init__(self, dbg_thread):
+    def __init__(self, debugger_thread):
         vtrace.Notifier.__init__(self)
-        self.dbg_thread = dbg_thread
+        self.debugger_thread = debugger_thread
 
     def notify(self, event, trace):
         '''
         Handle debugger events
-        '''         
+        '''
         if event == vtrace.NOTIFY_SIGNAL:       #1
             # sound the alarm, we caught an exception!
-            self.dbg_thread.caught_exception = True
-            
-            thread = trace.getCurrentThread()
-            signo = trace.getCurrentSignal()
-            self.dbg_thread.log(f"Process Received Signal {hex(signo)} (Thread: {thread})")
-            
-            # TODO make this platoform independant as Win32Events are specific to Windows
-            event_info = trace.getMeta('Win32Event')
-            for event in event_info.keys():
-                try:
-                    self.dbg_thread.log(f'\t{event} Value: {hex(event_info[event])}')
-                except:
-                    self.dbg_thread.log(f'\t{event} Value: {event_info[event]}')
-            
-            # leverage Vtrace's native memory fault detection function to categorize the exception
-            faddr,fperm = trace.getMemoryFault()
-            if faddr is not None:
-                accstr = e_memory.getPermName(fperm)
-                self.dbg_thread.log(f"Memory Fault. Address: {e_bits.hex(faddr, 4)} Operation: {accstr}")
-            else:
-                self.dbg_thread.log(f"Non-memory fault exception.")
+            self.debugger_thread.access_violation = True
 
             # record the crash to the procmon crash bin for return to Boofuzz
             # include the test case number in the "extra" info block for correlation
-            self.dbg_thread.process_monitor.crash_bin.record_crash(trace, thread, extra=self.dbg_thread.process_monitor.test_number)
+            self.debugger_thread.process_monitor.crash_bin.record_crash(trace, extra=self.debugger_thread.process_monitor.test_number)
 
             # save the crash synopsis
-            self.dbg_thread.process_monitor.last_synopsis = self.dbg_thread.process_monitor.crash_bin.crash_synopsis()
-            head = self.dbg_thread.process_monitor.last_synopsis.split("\n")[0]      
-            self.dbg_thread.log(f"Debugger thread {self.dbg_thread.getName()} caught exception:\n\t{head}")
-            
-            # save this data to a file
-            self.dbg_thread.process_monitor.crash_bin.export_file(self.dbg_thread.process_monitor.crash_filename)
+            self.debugger_thread.process_monitor.last_synopsis = self.debugger_thread.process_monitor.crash_bin.crash_synopsis()
+            first_line = self.debugger_thread.process_monitor.last_synopsis.split("\n")[0]
+
+            self.debugger_thread.log(f"Debugger Thread {self.debugger_thread.getName()} caught access violation:\n\t{first_line}")
+
+            # kill the process
+            trace.kill()
     
         elif event == vtrace.NOTIFY_BREAK:      #2
             pass
@@ -99,72 +68,64 @@ class VtraceCallbackNotifier(vtrace.Notifier):
         elif event == vtrace.NOTIFY_CONTINUE:   #5
             pass
         elif event == vtrace.NOTIFY_EXIT:       #6
-            self.dbg_thread.log(f"Target Process Exited. Exit Code: {trace.getMeta('ExitCode')}")
+            self.debugger_thread.log(f"Target Process Exited. Exit Code: {trace.getMeta('ExitCode')}")
             pass
         elif event == vtrace.NOTIFY_ATTACH:     #7
             pass
         elif event == vtrace.NOTIFY_DETACH:     #8
-            self.dbg_thread.log(f"Debugger thread detaching from target.")
+            self.debugger_thread.log(f"Debugger Thread detaching from target.")
         elif event == vtrace.NOTIFY_LOAD_LIBRARY:   #9
             pass
         elif event == vtrace.NOTIFY_UNLOAD_LIBRARY: #10
             pass
         elif event == vtrace.NOTIFY_CREATE_THREAD:  #11
-            self.dbg_thread.log(f"[vtrace] Target Thread Created: {trace.getMeta('ThreadId')}")
+            self.debugger_thread.log(f"[vtrace] Target Thread Created: {trace.getMeta('ThreadId')}", 5)
         elif event == vtrace.NOTIFY_EXIT_THREAD:    #12
-            self.dbg_thread.log(f"[vtrace] Target Thread Closed: {trace.getMeta('ExitThread')}")
+            self.debugger_thread.log(f"[vtrace] Target Thread Closed: {trace.getMeta('ExitThread')}", 5)
         elif event == vtrace.NOTIFY_DEBUG_PRINT:    #13
-            self.dbg_thread.log(f"Debug print event: {event}")
-            self.dbg_callback_dbg(trace, self.dbg_thread)
+            self.debugger_thread.log(f"Debug print event: {event}")
+            self.dbg_callback_dbg(trace, self.debugger_thread)
         elif event == vtrace.NOTIFY_MAX:            #20
             pass
         else:
-            self.dbg_thread.log(f"Other event detected with id: {event}")
+            self.debugger_thread.log(f"Other event detected with id: {event}")
 
-        # do we continue tracing or stop?
-        if self.dbg_thread.caught_exception:
-            trace.release()
-        else:
-            # release the trace object
-            trace.runAgain()
+        trace.runAgain()
 
-    def dbg_callback_debug(self, trace, dbg_thread):
-        debug_info = trace.getMeta('Win32Event')['DebugString']
-        self.dbg_thread.log("DebugPrint: \n%s" % (debug_info, ))
+    def dbg_callback_debug(self, trace, debugger_thread):
+        if(trace.getMeta('Platform') == 'windows'):
+            debug_info = trace.getMeta('Win32Event')['DebugString']
+            self.debugger_thread.log("DebugPrint: \n%s" % (debug_info, ))
         return True
 
 class DebuggerThreadVtrace(threading.Thread):
     def __init__(
-        self,
-        start_commands,
-        process_monitor,
-        proc_name=None,
-        ignore_pid=None,
-        log_level=1,
-        capture_output=False,
-        **kwargs
+        self, start_commands, process_monitor, proc_name=None, ignore_pid=None, log_level=1, **kwargs
     ):
+        """
+        Instantiate a new Vtrace instance and register debugger event callbacks.
+        """
         threading.Thread.__init__(self)
         
-        self.proc_name = proc_name
-        self.ignore_pid = ignore_pid
         self.start_commands = start_commands
         self.process_monitor = process_monitor
-
-        self.capture_output = capture_output
         self.finished_starting = threading.Event()
-        self.caught_exception = False
+        self.proc_name = proc_name
+        self.ignore_pid = ignore_pid
+
+        self.access_violation = False
         self.active = True
         self.pid = None
 
+        # give this thread a unique name
         self.setName("%d" % time.time())
 
-        self.trace = vtrace.getTrace()
+        self.process_monitor.log(f"Debugger Thread initialized with UID {self.getName()}")
 
+        # set the user callback which is called when the vtrace debugger receives a signal
+        # self.trace.registerNotifier(vtrace.NOTIFY_ALL, VtraceCallbackNotifier(self))
         self.log_level = log_level
         self._process = None
-        
-        self.log(f"Debugger thread initialized with UID {self.getName()}")
 
     def log(self, msg="", level=1):
         """
@@ -173,60 +134,57 @@ class DebuggerThreadVtrace(threading.Thread):
         @type  msg: str
         @param msg: Message to log
         """
-
         if self.log_level >= level:
             print(f"[{time.strftime('%I:%M.%S')}] [dbg-thread] {msg}")
 
     def spawn_target(self):
         self.log("Spawining target processs...")
-
         for command in self.start_commands:
             self.log(f"Executing start command: {command}")
             try:
-                if self.capture_output:
-                    self._process = subprocess.Popen(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-                else:
-                    self._process = subprocess.Popen(command)
-            except Exception as e:
-                self.log(f'Exception while executing start command {command}: {e}')
+                self._process = subprocess.Popen(command)
+            except OSError as e:
+                print('OSError "{0}" while starting "{1}"'.format(e.strerror, command), file=sys.stderr)
+                raise
                 return False
             
         self.log("Done. target up and running, giving it 5 seconds to settle in.")
         time.sleep(5)
         self.pid = self._process.pid
-        self.log(f"{self.proc_name} initialized.")
         return True
         
     def run(self):
         """
         Main thread routine, called on thread.start(). Thread exits when this routine returns.
         """
-        if len(self.start_commands) > 0:
-            self.spawn_target()
-        elif self.proc_name is not None:
-            self.watch()
-        else:
-            self.log("Error: procmon has no start command or process name to attach to!")
-            return False
-        
-        # tell the trace object what our target's name is
-        self.trace.setMeta('proc_name', self.proc_name)
-
         try:
-            self.log(f"Debugger thread {self.getName()} attaching to PID {self.pid}")
+            if len(self.start_commands) > 0:
+                self.spawn_target()
+            elif self.proc_name is not None:
+                self.watch()
+            else:
+                self.log("Error: procmon has no start command or process name to attach to!")
+                return False 
+            
+            # attach trace to the target process
+            self.log(f"Debugger Thread {self.getName()} attaching to PID {self.pid}")
+            self.trace = vtrace.getTrace()
             self.trace.attach(self.pid)
 
-            # set the callback notifier function which is triggered when vtrace receives a signal
+            # set the user callback which is called when the vtrace debugger receives a signal
             self.trace.registerNotifier(vtrace.NOTIFY_ALL, VtraceCallbackNotifier(self))
+            self.log("Attached to target process.")
             self.finished_starting.set()
         except Exception as e:
             self.log(f"Failed to attach to target:\n\t{e}")
             self.log(f"Exiting.")
             return
 
-        self.log(f"Debugger thread running.")
+        self.log(f"Debugger Thread running.")
         self.trace.run()
-        self.log(f"Debugger thread {self.getName()} exiting")
+
+        self.log(f"Debugger Thread {self.getName()} exiting")
+        self.trace.release()
         return
 
     def watch(self):
@@ -234,31 +192,36 @@ class DebuggerThreadVtrace(threading.Thread):
         Continuously loop, watching for the target process. This routine "blocks" until the target process is found.
         Update self.pid when found and return.
         """
-        self.pid = None
-        while not self.pid:
-            for (pid, name) in _enumerate_processes():
-                # ignore the optionally specified PID.
-                if pid == self.ignore_pid:
-                    continue
+        self.log(f"looking for process name: {self.proc_name}")
+        self.pid = self._scan_proc_names_blocking()
+        self.log(f"match on pid {self.pid}")
 
-                if name.lower() == self.proc_name.lower():
-                    self.pid = pid
-                    break
+    def _enumerate_processes(self):
+        for pid in psutil.pids():
+            try:
+                yield (pid, psutil.Process(pid).name())
+            except Exception as e:
+                continue
+
+    def _scan_proc_names_blocking(self):
+        pid = None
+        while pid is None:
+            pid = self._scan_proc_names_once()
+        return pid
+
+    def _scan_proc_names_once(self):
+        for (pid, name) in self._enumerate_processes():
+            if name.lower() == self.proc_name.lower() and pid != self.ignore_pid:
+                return pid
+        return None
 
     def stop_target(self):
         try:
-            if self.pid is not None:
-                self.log(f"Issuing stop command 'taskkill /F /PID {self.pid}'")
-                exit_code = os.system(f"taskkill /F /PID {self.pid}")
-            elif self.proc_name is not None:
-                self.log(f"Issuing stop command 'taskkill /F /IM {self.proc_name}'")
-                exit_code = os.system(f"taskkill /F /IM {self.proc_name}")
+            if self.trace.getMeta('Platform') == 'windows':
+                exit_code = os.system(f"taskkill -f -pid {self.pid}")
             else:
-                self.log("No target PID or process name to stop... send help")
-                
-            if exit_code != 0:
-                self.log(f"Unable stop target. Exit code: {exit_code}")
-        except Exception as e:
+                exit_code = os.system(f"pkill {self.proc_name}")
+        except OSError as e:
             self.log(f"Exception while trying to stop target: {e}")
             # TODO interpret some basic errors
         return
@@ -281,10 +244,10 @@ class DebuggerThreadVtrace(threading.Thread):
         # sleep to synchronize the debugger and procmon threads
         time.sleep(0.1)
         
-        crash = self.caught_exception
+        crash = self.access_violation
 
-        # if there was an exception caused, wait for the debugger thread to finish then kill thread handle.
-        # it is important to wait for the debugger thread to finish because it could be taking its sweet ass time
+        # if there was an exception caused, wait for the Debugger Thread to finish then kill thread handle.
+        # it is important to wait for the Debugger Thread to finish because it could be taking its sweet ass time
         # uncovering the details of the access violation.
         if crash:
             while self.is_alive():
@@ -292,4 +255,5 @@ class DebuggerThreadVtrace(threading.Thread):
             
         # serialize the crash bin to disk.
         self.process_monitor.crash_bin.export_file(self.process_monitor.crash_filename)
+
         return not crash
