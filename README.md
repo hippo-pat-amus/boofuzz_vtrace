@@ -4,6 +4,7 @@
 # Features
 - Full-featured Vtrace debugger-based target process monitor thread for Boofuzz
 - Windows and Linux fuzzing target OS support
+- Both x86 and 64-bit support
 - New runtime options:
   - Auto Restart: allows user to define at runtime whether the target process automatically restarts itself after a crash, and if so how long the procmon should wait for it to settle after a crash
   - Set Debugger Thread: allows the user to define at runtime which type of debugger thread to use (simple or vtrace)
