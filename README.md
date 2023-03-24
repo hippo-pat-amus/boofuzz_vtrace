@@ -1,4 +1,3 @@
-<meta name="google-site-verification" content="anHIycij591Czf8qbr1GKwCpP16TmMfpsF5Oy1hFf5c" />
 
 # Vtrace-based Process Monitor for Boofuzz
 [Vivisect](https://github.com/vivisect/vivisect) vtrace-based Process Monitor for [Boofuzz](https://github.com/jtpereyda/boofuzz). Re-introduces the debugger features offered by the legacy PyDbg library, bringing back detailed memory-level crash dumps for Windows (and linux!) fuzzing targets.
