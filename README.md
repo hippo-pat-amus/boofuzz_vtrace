@@ -14,10 +14,18 @@
 1. Install vivisect on your fuzzing target machine
 > pip install vivisect
 
+## Boofuzz from Source
+
 2. Replace the original target-based Boofuzz files with these versions:
 - boofuzz/process_monitor.py
 - boofuzz/boofuzz/utils/crash_binning.py
 - boofuzz/boofuzz/utils/process_monitor_pedrpc_server.py
+
+## Boofuzz from Pip
+
+2. Drop process_monitor.py in the root boofuzz directory and replace the original target-based Boofuzz files with these versions:
+- boofuzz/utils/crash_binning.py
+- boofuzz/utils/process_monitor_pedrpc_server.py
 
 3. Drop debugger_thread_vtrace.py into boofuzz/boofuzz/utils/ on your target machine
 
