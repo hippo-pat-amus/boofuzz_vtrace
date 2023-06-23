@@ -30,6 +30,7 @@
 3. Drop debugger_thread_vtrace.py into boofuzz/boofuzz/utils/ on your target machine
 
 4. Configure the use of the process monitor on your fuzz controller script, e.g.
+*Note: if you provide a "proc_name" value, the debugger thread will attempt to first attach to an already-running target instance before trying to spawn a new one*
 
 > options = {"proc_name":"target.exe", "start_commands":['C:/target.exe'], 'debugger_thread':'vtrace'}  
 > procmon = ProcessMonitor(target_IP, 26002)  
