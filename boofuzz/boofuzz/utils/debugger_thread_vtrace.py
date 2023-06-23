@@ -158,10 +158,13 @@ class DebuggerThreadVtrace(threading.Thread):
         Main thread routine, called on thread.start(). Thread exits when this routine returns.
         """
         try:
-            if len(self.start_commands) > 0:
-                self.spawn_target()
-            elif self.proc_name is not None:
+            if self.proc_name is not None:
                 self.watch()
+            
+            if self.pid is None and len(self.start_commands) > 0:
+                self.spawn_target()
+            elif self.pid is not None:
+                pass
             else:
                 self.log("Error: procmon has no start command or process name to attach to!")
                 return False 
@@ -185,16 +188,15 @@ class DebuggerThreadVtrace(threading.Thread):
 
         self.log(f"Debugger Thread {self.getName()} exiting")
         self.trace.release()
-        return
+        return    
 
     def watch(self):
         """
-        Continuously loop, watching for the target process. This routine "blocks" until the target process is found.
-        Update self.pid when found and return.
+        Search once for the target process.
         """
         self.log(f"looking for process name: {self.proc_name}")
-        self.pid = self._scan_proc_names_blocking()
-        self.log(f"match on pid {self.pid}")
+        self.pid = self._scan_proc_names_once()
+        self.log(f"match on pid {self.pid}")     
 
     def _enumerate_processes(self):
         for pid in psutil.pids():
@@ -202,12 +204,6 @@ class DebuggerThreadVtrace(threading.Thread):
                 yield (pid, psutil.Process(pid).name())
             except Exception as e:
                 continue
-
-    def _scan_proc_names_blocking(self):
-        pid = None
-        while pid is None:
-            pid = self._scan_proc_names_once()
-        return pid
 
     def _scan_proc_names_once(self):
         for (pid, name) in self._enumerate_processes():
